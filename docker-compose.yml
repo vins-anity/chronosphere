@@ -1,0 +1,98 @@
+# =============================================================================
+# Chronosphere - Docker Compose Configuration
+# =============================================================================
+# Production-ready orchestration with health checks and proper networking
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: chronosphere-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chronosphere}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chronosphere}
+      POSTGRES_DB: ${POSTGRES_DB:-chronosphere}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chronosphere} -d ${POSTGRES_DB:-chronosphere}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - chronosphere-net
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: chronosphere-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-chronosphere}:${POSTGRES_PASSWORD:-chronosphere}@db:5432/${POSTGRES_DB:-chronosphere}
+      - ALLOWED_IPS=${ALLOWED_IPS:-["*"]}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Development: hot reload (remove for production)
+      - ./app:/app/app:ro
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/docs" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - chronosphere-net
+
+  # ---------------------------------------------------------------------------
+  # React/Vite Frontend (served via Nginx)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    container_name: chronosphere-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - chronosphere-net
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  chronosphere-net:
+    driver: bridge

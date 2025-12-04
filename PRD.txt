@@ -1,0 +1,146 @@
+Product Requirements Document: Project Chronosphere (Lite Edition)
+Version: 1.6-Production-Hardened (Stable & Scalable)
+Stack: Python 3.12 (uv) / FastAPI / Arq (Redis Queue) / Next.js 14
+Status: Approved for Generation
+1. Executive Summary: The Alpha Strategy
+1.1 The Market Gap
+The professional Dota 2 betting market is inefficient. Public bettors rely on delayed video feeds (7–15s latency). Chronosphere exploits this by using Game State Integration (GSI) to capture events 2–6 seconds before the public, enabling high-frequency predictions on accurate, real-time data.
+1.2 The Solution
+A "Lite" but "Iron-Clad" system that balances development speed with HFT-grade reliability. It uses a Ring Buffer to smooth noisy data and Async Workers to ensure the API never hangs during ML inference.
+1.3 User Value Proposition
+Live Oracle: A dashboard showing "True Win Probability" vs "Market Odds".
+Signal Integrity: We only show signals when data is stable (deduplicated and smoothed).
+Safety: The system auto-shuts off (Deadman Switch) if data lags by >1 second.
+2. System Architecture
+2.1 Technology Stack (Hardened)
+Layer
+Technology
+Reason for Choice
+Package Manager
+uv
+Fastest python package installer.
+Ingestion API
+FastAPI + Uvicorn
+Handles HTTP GSI POSTs. Strictly Input Only.
+Task Queue
+Arq (on Redis)
+Lightweight async job queue. Decouples Ingestion from ML Processing.
+ML Engine
+XGBoost
+Fast gradient boosting. Models versioned by filename.
+Data Buffering
+Redis List
+Acts as a "Ring Buffer" to store last 3 seconds of ticks for smoothing.
+Database
+PostgreSQL + SQLModel
+Async DB. Writes are Batched (every 5s) to prevent I/O bottlenecks.
+Observability
+Prometheus + Loguru
+Structured logs and latency metrics (tick_lag, processing_time).
+Frontend
+Next.js 14
+Renders live data with client-side interpolation for smoothness.
+
+2.2 System Diagram
+graph TD
+    subgraph "Ingestion Layer (FastAPI)"
+        GSI[Dota 2 Client] -- HTTP POST --> API[Ingest Endpoint]
+        API -- "Validate & Push" --> RedisBuffer[(Redis Ring Buffer)]
+        API -- "Ack (200 OK)" --> GSI
+    end
+
+    subgraph "Processing Layer (Arq Worker)"
+        Worker[Arq Worker Process]
+        RedisBuffer -- "Pop Ticks (Batch)" --> Worker
+        Worker -- "Dedupe & Smooth" --> Smoother[Signal Processor]
+        Smoother -- "Feature Vector" --> ML[XGBoost Predictor]
+        ML -- "Raw Prob" --> Calibrator[Isotonic Calibration]
+        Calibrator -- "True Prob" --> RedisPub[Redis Pub/Sub]
+        
+        Batcher[DB Batcher]
+        Worker -- "Queue Write" --> Batcher
+        Batcher -- "Every 5s" --> Postgres[(PostgreSQL)]
+    end
+
+    subgraph "Frontend Layer"
+        Socket[WebSocket Server]
+        UI[User Dashboard]
+        
+        RedisPub -- "New Prob" --> Socket
+        Socket -- "Stream" --> UI
+    end
+
+
+3. Data Architecture & Reliability
+3.1 Tick Storage (Batched)
+We do not write to the DB on every HTTP request. We buffer in memory and flush.
+Table: ticks (Partitioned by Match ID)
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| id | BigInt | Primary Key. |
+| match_id | UUID | Match Identifier. |
+| game_time | Integer | In-game clock. |
+| win_probability | Float | Final Calibrated Probability. |
+| is_smoothed | Boolean | True if this tick is an average of a 3-tick window. |
+3.2 Redis Keys (Buffers)
+buffer:match:{match_id} → List (Right Push, Left Pop). Stores raw GSI JSONs. TTL: 10 seconds.
+state:match:{match_id} → The canonical "Current State" used for features.
+deadman:{match_id} → Simple key with TTL 2s. If key missing, UI shows "CONNECTION LOST".
+4. Machine Learning & Signal Logic
+4.1 Defensive Signal Processing
+GSI data is noisy. We apply Hysteresis to prevent signal flickering.
+Deduplication: If tick.game_time == last_tick.game_time, discard unless tick.order_id is higher.
+Smoothing: Current_Prob = (Prev_Prob * 0.3) + (New_Model_Prob * 0.7). This prevents 20% jumps from a single frame of bad data.
+Stability Lock: If Gold_Velocity (change per sec) > 5000, LOCK the probability. Do not update UI until gold stabilizes (prevents reacting to buyback bugs).
+4.2 Handling Facets (Patch 7.37)
+Static Mapping: On match start, we inspect abilities.
+Caching: We store hero_id:facet_id in Redis immediately.
+Feature Vector: If Facet cannot be determined (rare), default to "Most Common Facet" for that hero to prevent model crash.
+5. API Specification
+5.1 Ingestion (Defensive)
+URL: POST /api/v1/gsi
+Logic:
+Auth Check: IP Whitelist.
+Quick Parse: Extract match_id and timestamp.
+Fire & Forget: Push raw JSON to arq queue.
+Return: 200 OK immediately (<2ms). Do not run ML here.
+5.2 Websocket (Smart Stream)
+URL: WS /ws/live
+Logic:
+Heartbeat: Send ping every 1s.
+Deadman: If no Redis update for 2s, send {"status": "stale"}.
+Interpolation: Client UI interpolates values between ticks to make the graph look 60fps even if data is 10fps.
+6. Development Roadmap (Production Focus)
+Phase 1: The "Iron Pipeline" (Week 1)
+Setup uv project.
+Implement FastAPI ingestion + Arq Worker.
+Goal: GSI sends data -> Arq processes it -> Logs to console. No ML yet. Prove the pipeline doesn't crash.
+Phase 2: The "Brain" (Week 2)
+Integrate XGBoost.
+Implement the Ring Buffer and Smoothing logic.
+Goal: Stable probabilities printed to console. No "jitter" when heroes die.
+Phase 3: The "Eyes" (Week 3)
+Build Next.js Dashboard.
+Connect WebSockets.
+Implement "Deadman Switch" UI alerts.
+Goal: Visual graph matching live gameplay.
+Phase 4: Production Deploy (Week 4)
+Dockerize (Separate containers for API, Worker, Frontend).
+Deploy to DigitalOcean ($24/mo droplet).
+Goal: Leave it running for a 60-minute match without memory leaks.
+7. Developer Setup (Copy-Paste)
+# 1. Init
+uv init chronosphere
+cd chronosphere
+
+# 2. Add Dependencies (Hardened Stack)
+uv add fastapi uvicorn[standard] arq redis sqlmodel asyncpg xgboost numpy loguru prometheus-client pydantic-settings
+
+# 3. Directory Structure
+# /app
+#   /ingest (FastAPI)
+#   /worker (Arq processors)
+#   /core (Config & Logic)
+#   /ml (Models & Smoothing)
+
+
