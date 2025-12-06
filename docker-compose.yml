@@ -43,10 +43,18 @@ services:
         condition: service_healthy
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-chronosphere}:${POSTGRES_PASSWORD:-chronosphere}@db:5432/${POSTGRES_DB:-chronosphere}
+      - REDIS_URL=${REDIS_URL:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - ALLOWED_IPS=${ALLOWED_IPS:-["*"]}
+      - STEAM_API_KEY=${STEAM_API_KEY:-}
+      - STRATZ_API_KEY=${STRATZ_API_KEY:-}
+      - PANDASCORE_API_KEY=${PANDASCORE_API_KEY:-}
+      - OPENDOTA_API_KEY=${OPENDOTA_API_KEY:-}
+      - ENV=${ENV:-production}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
+      - ./data:/app/data
       # Development: hot reload (remove for production)
       - ./app:/app/app:ro
     healthcheck:

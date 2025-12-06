@@ -25,3 +25,10 @@ uvicorn_*.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Application Data (Local)
+data/
+storage/
+*.jsonl
+*.pkl
+*.model
